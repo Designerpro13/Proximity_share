@@ -102,4 +102,4 @@ python main.py
 
 ## License
 
-Personal project — do whatever you want with it.
+Licensed under the [Apache License 2.0](LICENSE).
