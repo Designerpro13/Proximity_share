@@ -1,0 +1,1 @@
+"""Security subsystem — encryption utilities."""
