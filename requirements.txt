@@ -1,6 +1,4 @@
 kivy>=2.1.0
-kivymd>=1.1.1
 zeroconf>=0.47.1
 cryptography>=3.4.8
-watchdog>=2.1.9
 plyer>=2.1.0

@@ -149,6 +149,27 @@ class ProximityShareApp(App):
         if self.pairing_manager:
             self.pairing_manager.reject_pairing()
 
+    def complete_pairing_with_pin(self, device_name: str, pin: str):
+        """Complete pairing with a device using the PIN they displayed.
+
+        The PIN is used to derive the same shared secret that the peer generated.
+        In a full implementation, this would involve a network exchange.
+        For now, we store a secret derived from the PIN + device name as a
+        simplified pairing (both devices must enter each other's PIN).
+        """
+        import hashlib
+        import base64
+        # Derive a deterministic secret from PIN + both device names (sorted for consistency)
+        our_name = self.config_manager.get_device_name()
+        pair_key = "".join(sorted([our_name, device_name])) + pin
+        raw = hashlib.sha256(pair_key.encode()).digest()
+        secret_b64 = base64.b64encode(raw).decode()
+
+        if self.pairing_manager:
+            self.pairing_manager.complete_pairing(device_name, secret_b64)
+            if self.system_tray:
+                self.system_tray.notify_paired(device_name)
+
     # ------------------------------------------------------------------
     # Public API (for external callers / future CLI)
     # ------------------------------------------------------------------

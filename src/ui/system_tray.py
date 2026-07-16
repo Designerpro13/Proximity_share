@@ -1,9 +1,11 @@
 """
-System tray / UI layer for Proximity Share.
+UI layer for Proximity Share.
 
-Provides a minimal Kivy BoxLayout showing:
+Provides a Kivy BoxLayout showing:
   - Device name and status
-  - List of discovered peers
+  - List of discovered peers (clickable to select target)
+  - Send File button + Pair Device button
+  - Pending incoming file offers
   - Recent transfer log
 
 Also handles desktop notifications via plyer.
@@ -13,7 +15,9 @@ from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
 from kivy.uix.label import Label
 from kivy.uix.scrollview import ScrollView
-from kivy.uix.gridlayout import GridLayout
+from kivy.uix.popup import Popup
+from kivy.uix.filechooser import FileChooserListView
+from kivy.uix.textinput import TextInput
 from kivy.clock import Clock
 from kivy.logger import Logger
 
@@ -32,11 +36,13 @@ class SystemTrayManager:
         self.app = app
         self._root: BoxLayout | None = None
         self._status_label: Label | None = None
-        self._devices_label: Label | None = None
+        self._devices_layout: BoxLayout | None = None
         self._log_label: Label | None = None
         self._log_lines: list[str] = []
         self._offers_container: BoxLayout | None = None
         self._pending_offers: dict[str, BoxLayout] = {}
+        self._selected_device: str | None = None
+        self._device_buttons: dict[str, Button] = {}
 
     # ------------------------------------------------------------------
     # Widget construction
@@ -47,45 +53,64 @@ class SystemTrayManager:
         if self._root:
             return self._root
 
-        root = BoxLayout(orientation="vertical", padding=16, spacing=12)
+        root = BoxLayout(orientation="vertical", padding=12, spacing=8)
 
         # Header
         self._status_label = Label(
             text="[b]Proximity Share[/b]\nStarting...",
             markup=True,
             size_hint_y=None,
-            height=60,
+            height=50,
             halign="center",
             valign="middle",
         )
         self._status_label.bind(size=self._status_label.setter("text_size"))
         root.add_widget(self._status_label)
 
-        # Devices section
-        self._devices_label = Label(
-            text="[b]Devices:[/b] scanning...",
-            markup=True,
-            size_hint_y=None,
-            height=80,
-            halign="left",
-            valign="top",
-        )
-        self._devices_label.bind(size=self._devices_label.setter("text_size"))
-        root.add_widget(self._devices_label)
+        # ─── Action buttons row ───
+        actions = BoxLayout(orientation="horizontal", size_hint_y=None, height=44, spacing=8)
 
-        # Pending offers section
-        root.add_widget(Label(
-            text="[b]Incoming Files:[/b]",
+        send_btn = Button(text="📁 Send File", size_hint_x=0.5)
+        send_btn.bind(on_press=lambda x: self._open_file_chooser())
+
+        pair_btn = Button(text="🔑 Pair Device", size_hint_x=0.5)
+        pair_btn.bind(on_press=lambda x: self._open_pair_dialog())
+
+        actions.add_widget(send_btn)
+        actions.add_widget(pair_btn)
+        root.add_widget(actions)
+
+        # ─── Devices section (clickable list) ───
+        devices_header = Label(
+            text="[b]Devices[/b] (tap to select target):",
             markup=True,
             size_hint_y=None,
-            height=30,
+            height=28,
             halign="left",
-        ))
+        )
+        devices_header.bind(size=devices_header.setter("text_size"))
+        root.add_widget(devices_header)
+
+        self._devices_layout = BoxLayout(orientation="vertical", size_hint_y=None, height=0)
+        self._devices_layout.bind(minimum_height=self._devices_layout.setter("height"))
+        root.add_widget(self._devices_layout)
+
+        # ─── Incoming files section ───
+        offers_header = Label(
+            text="[b]Incoming:[/b]",
+            markup=True,
+            size_hint_y=None,
+            height=24,
+            halign="left",
+        )
+        offers_header.bind(size=offers_header.setter("text_size"))
+        root.add_widget(offers_header)
+
         self._offers_container = BoxLayout(orientation="vertical", size_hint_y=None)
         self._offers_container.bind(minimum_height=self._offers_container.setter("height"))
         root.add_widget(self._offers_container)
 
-        # Transfer log (scrollable)
+        # ─── Transfer log (scrollable) ───
         scroll = ScrollView(size_hint=(1, 1))
         self._log_label = Label(
             text="",
@@ -103,7 +128,7 @@ class SystemTrayManager:
         return root
 
     # ------------------------------------------------------------------
-    # UI updates (call from main thread via Clock)
+    # UI updates
     # ------------------------------------------------------------------
 
     def set_status(self, text: str):
@@ -114,20 +139,45 @@ class SystemTrayManager:
         Clock.schedule_once(_update, 0)
 
     def update_devices(self, devices: dict[str, dict]):
-        """Refresh the discovered devices display.
-
-        Args:
-            devices: {name: {"ip": str, "port": int}}
-        """
+        """Refresh the discovered devices as clickable buttons."""
         def _update(dt):
-            if not self._devices_label:
+            if not self._devices_layout:
                 return
+            self._devices_layout.clear_widgets()
+            self._device_buttons.clear()
+
             if not devices:
-                self._devices_label.text = "[b]Devices:[/b] none found"
+                lbl = Label(text="  No devices found", size_hint_y=None, height=30, halign="left")
+                lbl.bind(size=lbl.setter("text_size"))
+                self._devices_layout.add_widget(lbl)
+                self._devices_layout.height = 30
                 return
-            lines = [f"  • {name} ({info['ip']})" for name, info in devices.items()]
-            self._devices_label.text = "[b]Devices:[/b]\n" + "\n".join(lines)
+
+            for name, info in devices.items():
+                ip = info["ip"]
+                selected = (name == self._selected_device)
+                prefix = "▶ " if selected else "  "
+                btn = Button(
+                    text=f"{prefix}{name} ({ip})",
+                    size_hint_y=None,
+                    height=36,
+                    halign="left",
+                    background_color=(0.2, 0.6, 0.2, 1) if selected else (0.3, 0.3, 0.3, 1),
+                )
+                btn.bind(on_press=lambda x, n=name: self._select_device(n))
+                self._device_buttons[name] = btn
+                self._devices_layout.add_widget(btn)
+
+            self._devices_layout.height = len(devices) * 36
         Clock.schedule_once(_update, 0)
+
+    def _select_device(self, device_name: str):
+        """Select a device as the send target."""
+        self._selected_device = device_name
+        self.log_event(f"→ Target: {device_name}")
+        # Refresh to show selection highlight
+        devices = self.app.get_devices()
+        self.update_devices(devices)
 
     def log_event(self, message: str):
         """Append a line to the transfer log."""
@@ -138,6 +188,121 @@ class SystemTrayManager:
             if self._log_label:
                 self._log_label.text = "\n".join(self._log_lines)
         Clock.schedule_once(_update, 0)
+
+    # ------------------------------------------------------------------
+    # Send File dialog
+    # ------------------------------------------------------------------
+
+    def _open_file_chooser(self):
+        """Open a file picker popup."""
+        if not self._selected_device:
+            self.log_event("✗ Select a device first (tap a device above)")
+            return
+
+        content = BoxLayout(orientation="vertical", spacing=8)
+        chooser = FileChooserListView(
+            path=str(self.app.config_manager.get_shared_folder().parent),
+            filters=["*"],
+        )
+        content.add_widget(chooser)
+
+        btn_row = BoxLayout(size_hint_y=None, height=44, spacing=8)
+        send_btn = Button(text="Send")
+        cancel_btn = Button(text="Cancel")
+        btn_row.add_widget(send_btn)
+        btn_row.add_widget(cancel_btn)
+        content.add_widget(btn_row)
+
+        popup = Popup(title="Select file to send", content=content, size_hint=(0.9, 0.9))
+
+        def _send(instance):
+            selection = chooser.selection
+            if selection:
+                filepath = selection[0]
+                devices = self.app.get_devices()
+                target = devices.get(self._selected_device)
+                if target:
+                    success = self.app.send_file(filepath, target["ip"], target["port"])
+                    if success:
+                        from pathlib import Path
+                        self.log_event(f"↑ Queued: {Path(filepath).name} → {self._selected_device}")
+                    else:
+                        self.log_event(f"✗ Failed to queue file")
+                else:
+                    self.log_event(f"✗ Device '{self._selected_device}' not available")
+            popup.dismiss()
+
+        send_btn.bind(on_press=_send)
+        cancel_btn.bind(on_press=lambda x: popup.dismiss())
+        popup.open()
+
+    # ------------------------------------------------------------------
+    # Pair Device dialog
+    # ------------------------------------------------------------------
+
+    def _open_pair_dialog(self):
+        """Open pairing options popup."""
+        content = BoxLayout(orientation="vertical", spacing=12, padding=12)
+
+        content.add_widget(Label(
+            text="[b]Device Pairing[/b]",
+            markup=True,
+            size_hint_y=None,
+            height=30,
+        ))
+
+        # Option 1: Start pairing (show PIN)
+        start_btn = Button(text="Start Pairing (show my PIN)", size_hint_y=None, height=44)
+
+        # Option 2: Enter peer's PIN
+        enter_label = Label(text="Or enter peer's PIN:", size_hint_y=None, height=28)
+        pin_input = TextInput(
+            hint_text="6-digit PIN",
+            input_filter="int",
+            multiline=False,
+            size_hint_y=None,
+            height=40,
+            max_length=6,  # type: ignore[arg-type]
+        )
+        confirm_btn = Button(text="Confirm PIN", size_hint_y=None, height=44)
+
+        cancel_btn = Button(text="Close", size_hint_y=None, height=36)
+
+        content.add_widget(start_btn)
+        content.add_widget(Label(size_hint_y=None, height=8))  # spacer
+        content.add_widget(enter_label)
+        content.add_widget(pin_input)
+        content.add_widget(confirm_btn)
+        content.add_widget(Label(size_hint_y=1))  # flex spacer
+        content.add_widget(cancel_btn)
+
+        popup = Popup(title="Pair Device", content=content, size_hint=(0.7, 0.6))
+
+        def _start_pairing(instance):
+            pin = self.app.start_pairing()
+            if pin:
+                self.log_event(f"🔑 Your pairing PIN: [b]{pin}[/b]")
+                self.show_notification("Pairing PIN", f"Your PIN: {pin}")
+                start_btn.text = f"PIN: {pin}"
+                start_btn.disabled = True
+
+        def _confirm_pin(instance):
+            entered = pin_input.text.strip()
+            if len(entered) == 6 and entered.isdigit():
+                # For now, use entered PIN to complete pairing with selected device
+                if self._selected_device:
+                    self.app.complete_pairing_with_pin(self._selected_device, entered)
+                    self.log_event(f"🔑 Pairing with '{self._selected_device}' via PIN")
+                else:
+                    self.log_event("✗ Select a device first to pair with")
+                popup.dismiss()
+            else:
+                pin_input.hint_text = "Must be 6 digits!"
+
+        start_btn.bind(on_press=_start_pairing)
+        confirm_btn.bind(on_press=_confirm_pin)
+        cancel_btn.bind(on_press=lambda x: popup.dismiss())
+        popup.open()
 
     # ------------------------------------------------------------------
     # Notifications
@@ -233,7 +398,7 @@ class SystemTrayManager:
             row = BoxLayout(orientation="horizontal", size_hint_y=None, height=50, spacing=8)
 
             label = Label(
-                text=f"🔑 Pair with '{device_name}'? PIN: [b]{pin}[/b]",
+                text=f"🔑 Pair '{device_name}'? PIN: [b]{pin}[/b]",
                 markup=True,
                 size_hint_x=0.6,
                 halign="left",

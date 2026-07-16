@@ -12,3 +12,4 @@ env/
 .env
 *.log
 .kivy/
+.kiro/
