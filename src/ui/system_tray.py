@@ -212,3 +212,60 @@ class SystemTrayManager:
                 if self._offers_container and widget.parent:
                     self._offers_container.remove_widget(widget)
         Clock.schedule_once(_update, 0)
+
+    # ------------------------------------------------------------------
+    # Pairing UI
+    # ------------------------------------------------------------------
+
+    def show_pairing_pin(self, pin: str, device_name: str | None = None):
+        """Display the pairing PIN for the user to share with the peer."""
+        def _update(dt):
+            context = f" for '{device_name}'" if device_name else ""
+            self.log_event(f"🔑 Pairing PIN{context}: [b]{pin}[/b] — share with peer")
+            self.show_notification("Pairing", f"PIN: {pin}")
+        Clock.schedule_once(_update, 0)
+
+    def show_pairing_request(self, device_name: str, pin: str):
+        """Show incoming pairing request with confirm/reject buttons."""
+        def _update(dt):
+            if not self._offers_container:
+                return
+            row = BoxLayout(orientation="horizontal", size_hint_y=None, height=50, spacing=8)
+
+            label = Label(
+                text=f"🔑 Pair with '{device_name}'? PIN: [b]{pin}[/b]",
+                markup=True,
+                size_hint_x=0.6,
+                halign="left",
+            )
+            label.bind(size=label.setter("text_size"))
+
+            confirm_btn = Button(text="Confirm", size_hint_x=0.2)
+            confirm_btn.bind(on_press=lambda x: self._handle_pairing_response(True, row))
+
+            reject_btn = Button(text="Reject", size_hint_x=0.2)
+            reject_btn.bind(on_press=lambda x: self._handle_pairing_response(False, row))
+
+            row.add_widget(label)
+            row.add_widget(confirm_btn)
+            row.add_widget(reject_btn)
+
+            self._offers_container.add_widget(row)
+        Clock.schedule_once(_update, 0)
+
+    def _handle_pairing_response(self, confirm: bool, widget: BoxLayout):
+        """Handle user pairing confirmation/rejection."""
+        if confirm:
+            self.app.confirm_pairing()
+        else:
+            self.app.reject_pairing()
+
+        def _remove(dt):
+            if self._offers_container and widget.parent:
+                self._offers_container.remove_widget(widget)
+        Clock.schedule_once(_remove, 0)
+
+    def notify_paired(self, device_name: str):
+        """Notify user that pairing completed."""
+        self.log_event(f"✓ Paired with '{device_name}'")
+        self.show_notification("Paired", f"Now paired with {device_name}")

@@ -202,7 +202,10 @@ class TransferProtocol:
                 return
 
             # Encryption compatibility check
-            shared_secret = self._config.get_shared_secret()
+            shared_secret = self._config.get_secret_for_device(peer_device)
+            if peer_encryption and not shared_secret:
+                # Fall back to global secret
+                shared_secret = self._config.get_shared_secret()
             if peer_encryption and not shared_secret:
                 self._send_message(sock, self.MSG_ERROR, b"encryption not configured")
                 return

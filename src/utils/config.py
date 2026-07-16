@@ -162,4 +162,17 @@ class Config:
         return bool(self.config_data.get("notification_enabled", True))
 
     def get_shared_secret(self) -> str:
+        """Get the global shared secret (fallback for unpaired devices)."""
         return str(self.config_data.get("shared_secret", ""))
+
+    def get_secret_for_device(self, device_name: str) -> str:
+        """Get the shared secret for a specific device.
+
+        Priority: per-device paired secret > global shared_secret > empty.
+        """
+        from security.pairing import PairingManager
+        pm = PairingManager(self.config_dir)
+        device_secret = pm.get_secret_for_device(device_name)
+        if device_secret:
+            return device_secret
+        return self.get_shared_secret()

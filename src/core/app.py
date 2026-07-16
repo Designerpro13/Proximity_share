@@ -1,7 +1,7 @@
 """
 Main application class — lifecycle orchestrator for Proximity Share.
 
-Wires together: Config, NetworkDiscovery, TransferManager, SystemTrayManager.
+Wires together: Config, NetworkDiscovery, TransferManager, SystemTrayManager, PairingManager.
 """
 
 from kivy.app import App
@@ -9,6 +9,7 @@ from kivy.clock import Clock
 from kivy.logger import Logger
 
 from network.discovery import NetworkDiscovery
+from security.pairing import PairingManager
 from transfer.manager import TransferManager
 from ui.system_tray import SystemTrayManager
 from utils.config import Config
@@ -25,6 +26,7 @@ class ProximityShareApp(App):
         self.network_discovery: NetworkDiscovery | None = None
         self.transfer_manager: TransferManager | None = None
         self.system_tray: SystemTrayManager | None = None
+        self.pairing_manager: PairingManager | None = None
 
     # ------------------------------------------------------------------
     # Kivy lifecycle
@@ -37,12 +39,15 @@ class ProximityShareApp(App):
         self.network_discovery = NetworkDiscovery(self.config_manager)
         self.transfer_manager = TransferManager(self.config_manager)
         self.system_tray = SystemTrayManager(self)
+        self.pairing_manager = PairingManager(self.config_manager.config_dir)
 
         # Wire callbacks
         self.network_discovery.on_devices_changed = self._on_devices_changed
         self.transfer_manager.on_file_received = self._on_file_received
         self.transfer_manager.on_file_sent = self._on_file_sent
         self.transfer_manager.on_file_offer = self._on_file_offer
+        self.pairing_manager.on_pairing_request = self._on_pairing_request
+        self.pairing_manager.on_pairing_complete = self._on_pairing_complete
 
         # Kick off services after the event loop starts
         Clock.schedule_once(self._start_services, 0.5)
@@ -107,6 +112,42 @@ class ProximityShareApp(App):
         """Reject an incoming file offer."""
         if self.transfer_manager:
             self.transfer_manager.reject_offer(offer_id)
+
+    # ------------------------------------------------------------------
+    # Pairing
+    # ------------------------------------------------------------------
+
+    def start_pairing(self) -> str | None:
+        """Initiate pairing — generates secret and displays PIN.
+
+        Returns the PIN string, or None on failure.
+        """
+        if not self.pairing_manager:
+            return None
+        secret_b64, pin = self.pairing_manager.initiate_pairing()
+        if self.system_tray:
+            self.system_tray.show_pairing_pin(pin)
+        return pin
+
+    def _on_pairing_request(self, device_name: str, pin: str):
+        """Called when a remote device wants to pair with us."""
+        if self.system_tray:
+            self.system_tray.show_pairing_request(device_name, pin)
+
+    def _on_pairing_complete(self, device_name: str):
+        """Called when pairing completes successfully."""
+        if self.system_tray:
+            self.system_tray.notify_paired(device_name)
+
+    def confirm_pairing(self):
+        """User confirms the pairing PIN matches."""
+        if self.pairing_manager:
+            self.pairing_manager.confirm_pairing()
+
+    def reject_pairing(self):
+        """User rejects the pairing request."""
+        if self.pairing_manager:
+            self.pairing_manager.reject_pairing()
 
     # ------------------------------------------------------------------
     # Public API (for external callers / future CLI)
