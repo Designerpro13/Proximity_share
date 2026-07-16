@@ -4,6 +4,10 @@ Main application class — lifecycle orchestrator for Proximity Share.
 Wires together: Config, NetworkDiscovery, TransferManager, SystemTrayManager, PairingManager.
 """
 
+import hashlib
+import base64
+from pathlib import Path
+
 from kivy.app import App
 from kivy.clock import Clock
 from kivy.logger import Logger
@@ -88,7 +92,6 @@ class ProximityShareApp(App):
 
     def _on_file_received(self, filepath: str):
         """Called by TransferManager/Protocol when a file arrives."""
-        from pathlib import Path
         name = Path(filepath).name
         if self.system_tray:
             self.system_tray.notify_file_received(name)
@@ -152,14 +155,10 @@ class ProximityShareApp(App):
     def complete_pairing_with_pin(self, device_name: str, pin: str):
         """Complete pairing with a device using the PIN they displayed.
 
-        The PIN is used to derive the same shared secret that the peer generated.
-        In a full implementation, this would involve a network exchange.
-        For now, we store a secret derived from the PIN + device name as a
-        simplified pairing (both devices must enter each other's PIN).
+        Derives a deterministic shared secret from PIN + both device names (sorted
+        for consistency). Both devices must enter each other's PIN to derive the
+        same secret.
         """
-        import hashlib
-        import base64
-        # Derive a deterministic secret from PIN + both device names (sorted for consistency)
         our_name = self.config_manager.get_device_name()
         pair_key = "".join(sorted([our_name, device_name])) + pin
         raw = hashlib.sha256(pair_key.encode()).digest()

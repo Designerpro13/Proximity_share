@@ -70,10 +70,10 @@ class SystemTrayManager:
         # ─── Action buttons row ───
         actions = BoxLayout(orientation="horizontal", size_hint_y=None, height=44, spacing=8)
 
-        send_btn = Button(text="📁 Send File", size_hint_x=0.5)
+        send_btn = Button(text=" Send File", size_hint_x=0.5)
         send_btn.bind(on_press=lambda x: self._open_file_chooser())
 
-        pair_btn = Button(text="🔑 Pair Device", size_hint_x=0.5)
+        pair_btn = Button(text=" Pair Device", size_hint_x=0.5)
         pair_btn.bind(on_press=lambda x: self._open_pair_dialog())
 
         actions.add_widget(send_btn)
@@ -262,8 +262,12 @@ class SystemTrayManager:
             multiline=False,
             size_hint_y=None,
             height=40,
-            max_length=6,  # type: ignore[arg-type]
         )
+        # Limit to 6 characters via on_text handler
+        def _limit_pin_length(instance, value):
+            if len(value) > 6:
+                instance.text = value[:6]
+        pin_input.bind(text=_limit_pin_length)
         confirm_btn = Button(text="Confirm PIN", size_hint_y=None, height=44)
 
         cancel_btn = Button(text="Close", size_hint_y=None, height=36)
@@ -281,7 +285,7 @@ class SystemTrayManager:
         def _start_pairing(instance):
             pin = self.app.start_pairing()
             if pin:
-                self.log_event(f"🔑 Your pairing PIN: [b]{pin}[/b]")
+                self.log_event(f" Your pairing PIN: [b]{pin}[/b]")
                 self.show_notification("Pairing PIN", f"Your PIN: {pin}")
                 start_btn.text = f"PIN: {pin}"
                 start_btn.disabled = True
@@ -292,7 +296,7 @@ class SystemTrayManager:
                 # For now, use entered PIN to complete pairing with selected device
                 if self._selected_device:
                     self.app.complete_pairing_with_pin(self._selected_device, entered)
-                    self.log_event(f"🔑 Pairing with '{self._selected_device}' via PIN")
+                    self.log_event(f" Pairing with '{self._selected_device}' via PIN")
                 else:
                     self.log_event("✗ Select a device first to pair with")
                 popup.dismiss()
@@ -386,7 +390,7 @@ class SystemTrayManager:
         """Display the pairing PIN for the user to share with the peer."""
         def _update(dt):
             context = f" for '{device_name}'" if device_name else ""
-            self.log_event(f"🔑 Pairing PIN{context}: [b]{pin}[/b] — share with peer")
+            self.log_event(f" Pairing PIN{context}: [b]{pin}[/b] — share with peer")
             self.show_notification("Pairing", f"PIN: {pin}")
         Clock.schedule_once(_update, 0)
 
@@ -398,7 +402,7 @@ class SystemTrayManager:
             row = BoxLayout(orientation="horizontal", size_hint_y=None, height=50, spacing=8)
 
             label = Label(
-                text=f"🔑 Pair '{device_name}'? PIN: [b]{pin}[/b]",
+                text=f" Pair '{device_name}'? PIN: [b]{pin}[/b]",
                 markup=True,
                 size_hint_x=0.6,
                 halign="left",

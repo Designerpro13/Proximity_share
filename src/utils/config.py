@@ -169,10 +169,12 @@ class Config:
         """Get the shared secret for a specific device.
 
         Priority: per-device paired secret > global shared_secret > empty.
+        Uses a cached PairingManager instance to avoid disk I/O per call.
         """
-        from security.pairing import PairingManager
-        pm = PairingManager(self.config_dir)
-        device_secret = pm.get_secret_for_device(device_name)
+        if not hasattr(self, '_pairing_manager'):
+            from security.pairing import PairingManager
+            self._pairing_manager = PairingManager(self.config_dir)
+        device_secret = self._pairing_manager.get_secret_for_device(device_name)
         if device_secret:
             return device_secret
         return self.get_shared_secret()
