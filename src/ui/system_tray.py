@@ -10,6 +10,7 @@ Also handles desktop notifications via plyer.
 """
 
 from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.button import Button
 from kivy.uix.label import Label
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.gridlayout import GridLayout
@@ -34,6 +35,8 @@ class SystemTrayManager:
         self._devices_label: Label | None = None
         self._log_label: Label | None = None
         self._log_lines: list[str] = []
+        self._offers_container: BoxLayout | None = None
+        self._pending_offers: dict[str, BoxLayout] = {}
 
     # ------------------------------------------------------------------
     # Widget construction
@@ -69,6 +72,18 @@ class SystemTrayManager:
         )
         self._devices_label.bind(size=self._devices_label.setter("text_size"))
         root.add_widget(self._devices_label)
+
+        # Pending offers section
+        root.add_widget(Label(
+            text="[b]Incoming Files:[/b]",
+            markup=True,
+            size_hint_y=None,
+            height=30,
+            halign="left",
+        ))
+        self._offers_container = BoxLayout(orientation="vertical", size_hint_y=None)
+        self._offers_container.bind(minimum_height=self._offers_container.setter("height"))
+        root.add_widget(self._offers_container)
 
         # Transfer log (scrollable)
         scroll = ScrollView(size_hint=(1, 1))
@@ -152,3 +167,48 @@ class SystemTrayManager:
 
     def notify_error(self, message: str):
         self.log_event(f"✗ Error: {message}")
+
+    # ------------------------------------------------------------------
+    # Pending offers
+    # ------------------------------------------------------------------
+
+    def show_pending_offer(self, offer_id: str, filename: str, filesize: int):
+        """Show a pending file offer with accept/reject buttons."""
+        def _update(dt):
+            row = BoxLayout(orientation="horizontal", size_hint_y=None, height=40, spacing=8)
+
+            size_str = f"{filesize / 1024:.1f} KB" if filesize < 1024 * 1024 else f"{filesize / (1024*1024):.1f} MB"
+            label = Label(text=f"{filename} ({size_str})", size_hint_x=0.6, halign="left")
+            label.bind(size=label.setter("text_size"))
+
+            accept_btn = Button(text="Accept", size_hint_x=0.2)
+            accept_btn.bind(on_press=lambda x: self._handle_offer_response(offer_id, True))
+
+            reject_btn = Button(text="Reject", size_hint_x=0.2)
+            reject_btn.bind(on_press=lambda x: self._handle_offer_response(offer_id, False))
+
+            row.add_widget(label)
+            row.add_widget(accept_btn)
+            row.add_widget(reject_btn)
+
+            self._pending_offers[offer_id] = row
+            if self._offers_container:
+                self._offers_container.add_widget(row)
+        Clock.schedule_once(_update, 0)
+
+    def _handle_offer_response(self, offer_id: str, accept: bool):
+        """Handle user's accept/reject decision for a file offer."""
+        if accept:
+            self.app.accept_file_offer(offer_id)
+        else:
+            self.app.reject_file_offer(offer_id)
+        self._remove_offer_widget(offer_id)
+
+    def _remove_offer_widget(self, offer_id: str):
+        """Remove the offer widget from the UI."""
+        def _update(dt):
+            if offer_id in self._pending_offers:
+                widget = self._pending_offers.pop(offer_id)
+                if self._offers_container and widget.parent:
+                    self._offers_container.remove_widget(widget)
+        Clock.schedule_once(_update, 0)

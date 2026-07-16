@@ -63,21 +63,54 @@ class FileContainer:
         meta_bytes = json.dumps(metadata).encode("utf-8")
         return len(meta_bytes).to_bytes(4, "big") + meta_bytes + self.content
 
+    # Maximum metadata JSON size (64 KB should be more than enough)
+    _MAX_METADATA_SIZE = 65536
+
     @classmethod
     def from_bytes(cls, data: bytes) -> "FileContainer":
-        """Deserialize from wire format."""
+        """Deserialize from wire format.
+
+        Security: validates metadata size bounds, required fields, and sanitizes filename.
+        """
         if len(data) < 4:
             raise ValueError("Data too short to contain metadata size header")
 
         meta_size = int.from_bytes(data[:4], "big")
+
+        # Guard against absurd metadata sizes (DoS / malformed data)
+        if meta_size > cls._MAX_METADATA_SIZE:
+            raise ValueError(f"Metadata size {meta_size} exceeds maximum ({cls._MAX_METADATA_SIZE})")
+
         if len(data) < 4 + meta_size:
             raise ValueError("Data truncated — metadata incomplete")
 
-        meta = json.loads(data[4 : 4 + meta_size].decode("utf-8"))
+        try:
+            meta = json.loads(data[4 : 4 + meta_size].decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            raise ValueError(f"Invalid metadata JSON: {e}")
+
+        # Validate required fields exist and have expected types
+        if not isinstance(meta.get("filename"), str) or not meta["filename"]:
+            raise ValueError("Missing or invalid 'filename' in metadata")
+        if not isinstance(meta.get("mime_type"), str):
+            raise ValueError("Missing or invalid 'mime_type' in metadata")
+
+        # Reject filenames with null bytes (potential exploit)
+        raw_filename = meta["filename"]
+        if "\x00" in raw_filename:
+            raise ValueError("Filename contains null bytes")
+
+        # Reject excessively long filenames
+        if len(raw_filename) > 512:
+            raise ValueError(f"Filename too long ({len(raw_filename)} chars, max 512)")
+
+        # Sanitize filename immediately at deserialization (defense in depth)
+        safe_filename = cls._sanitize_filename(raw_filename)
+
         content = data[4 + meta_size :]
 
         container = cls(
-            filename=meta["filename"],
+            filename=safe_filename,
             mime_type=meta["mime_type"],
             content=content,
             timestamp=meta.get("timestamp"),
@@ -87,7 +120,7 @@ class FileContainer:
         # Integrity check
         if container.checksum != meta.get("checksum"):
             raise ValueError(
-                f"Integrity check failed for '{meta['filename']}' — "
+                f"Integrity check failed for '{safe_filename}' — "
                 f"expected {meta.get('checksum')}, got {container.checksum}"
             )
 
@@ -131,19 +164,60 @@ class FileContainer:
     # ------------------------------------------------------------------
 
     def save_to_file(self, output_dir: str | Path) -> Path:
-        """Write content to disk, handling duplicate filenames."""
-        out = Path(output_dir)
+        """Write content to disk, handling duplicate filenames.
+
+        Security: sanitizes filename to prevent path traversal attacks.
+        """
+        out = Path(output_dir).resolve()
         out.mkdir(parents=True, exist_ok=True)
 
-        target = out / self.filename
+        # Sanitize filename: strip path separators, null bytes, and resolve to basename only
+        safe_name = self._sanitize_filename(self.filename)
+        target = out / safe_name
+
+        # Verify the resolved path is still within output_dir (defense in depth)
+        if not target.resolve().is_relative_to(out):
+            raise ValueError(f"Path traversal detected in filename: {self.filename!r}")
 
         # Deduplicate
         counter = 1
         while target.exists():
-            stem = Path(self.filename).stem
-            suffix = Path(self.filename).suffix
+            stem = Path(safe_name).stem
+            suffix = Path(safe_name).suffix
             target = out / f"{stem}_{counter}{suffix}"
             counter += 1
 
         target.write_bytes(self.content)
         return target
+
+    @staticmethod
+    def _sanitize_filename(filename: str) -> str:
+        """Sanitize a filename to prevent path traversal and invalid characters.
+
+        Strips directory components, null bytes, and control characters.
+        Falls back to a safe default if nothing remains.
+        """
+        # Remove null bytes and control characters
+        cleaned = filename.replace("\x00", "").strip()
+
+        # Take only the basename (strip any directory traversal)
+        cleaned = Path(cleaned).name
+
+        # Remove leading dots (hidden files / traversal fragments)
+        cleaned = cleaned.lstrip(".")
+
+        # Replace remaining problematic characters
+        for char in ("/", "\\", "\x00"):
+            cleaned = cleaned.replace(char, "_")
+
+        # Fallback if empty after sanitization
+        if not cleaned:
+            cleaned = "unnamed_file"
+
+        # Limit filename length (255 bytes is typical filesystem max)
+        if len(cleaned.encode("utf-8")) > 240:
+            stem = Path(cleaned).stem[:200]
+            suffix = Path(cleaned).suffix[:40]
+            cleaned = stem + suffix
+
+        return cleaned

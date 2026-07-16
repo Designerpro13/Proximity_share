@@ -41,6 +41,8 @@ class ProximityShareApp(App):
         # Wire callbacks
         self.network_discovery.on_devices_changed = self._on_devices_changed
         self.transfer_manager.on_file_received = self._on_file_received
+        self.transfer_manager.on_file_sent = self._on_file_sent
+        self.transfer_manager.on_file_offer = self._on_file_offer
 
         # Kick off services after the event loop starts
         Clock.schedule_once(self._start_services, 0.5)
@@ -85,6 +87,26 @@ class ProximityShareApp(App):
         name = Path(filepath).name
         if self.system_tray:
             self.system_tray.notify_file_received(name)
+
+    def _on_file_sent(self, filename: str, target_ip: str):
+        """Called by TransferManager when a file is successfully sent."""
+        if self.system_tray:
+            self.system_tray.notify_file_sent(filename, target_ip)
+
+    def _on_file_offer(self, offer_id: str, filename: str, filesize: int):
+        """Called when a file offer arrives and auto-accept is disabled."""
+        if self.system_tray:
+            self.system_tray.show_pending_offer(offer_id, filename, filesize)
+
+    def accept_file_offer(self, offer_id: str):
+        """Accept an incoming file offer."""
+        if self.transfer_manager:
+            self.transfer_manager.accept_offer(offer_id)
+
+    def reject_file_offer(self, offer_id: str):
+        """Reject an incoming file offer."""
+        if self.transfer_manager:
+            self.transfer_manager.reject_offer(offer_id)
 
     # ------------------------------------------------------------------
     # Public API (for external callers / future CLI)

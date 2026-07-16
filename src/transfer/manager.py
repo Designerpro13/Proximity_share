@@ -4,10 +4,12 @@ Transfer manager — priority queue with retry logic.
 Manages outbound file transfers: queuing, worker thread, exponential backoff.
 """
 
+import heapq
 import threading
 import time
 from pathlib import Path
 from queue import PriorityQueue, Empty
+from typing import Callable
 
 from kivy.logger import Logger
 
@@ -43,8 +45,14 @@ class TransferManager:
         self._running = False
         self._worker: threading.Thread | None = None
 
+        # Retry heap: (next_retry_time, tiebreaker, item)
+        self._retry_heap: list[tuple[float, int, TransferItem]] = []
+        self._retry_counter: int = 0
+
         # Expose protocol callbacks
         self.on_file_received = None  # set by app
+        self.on_file_sent: Callable[[str, str], None] | None = None  # set by app
+        self.on_file_offer: Callable[[str, str, int], None] | None = None  # set by app
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -55,9 +63,11 @@ class TransferManager:
         if self._running:
             return
 
-        # Wire callback
+        # Wire callbacks
         if self.on_file_received:
             self._protocol.on_file_received = self.on_file_received
+        if self.on_file_offer:
+            self._protocol.on_file_offer = self.on_file_offer
 
         self._protocol.start_server()
         self._running = True
@@ -104,6 +114,14 @@ class TransferManager:
         Logger.info(f"Proximity: Queued '{path.name}' → {target_ip}:{port} (pri={priority})")
         return True
 
+    def accept_offer(self, offer_id: str):
+        """Accept a pending file offer (pass through to protocol)."""
+        self._protocol.accept_offer(offer_id)
+
+    def reject_offer(self, offer_id: str):
+        """Reject a pending file offer (pass through to protocol)."""
+        self._protocol.reject_offer(offer_id)
+
     # ------------------------------------------------------------------
     # Worker
     # ------------------------------------------------------------------
@@ -114,34 +132,40 @@ class TransferManager:
         max_retries = self._config.get_max_retries()
 
         while self._running:
+            # Process due retries first
+            now = time.time()
+            while self._retry_heap and self._retry_heap[0][0] <= now:
+                _, _, item = heapq.heappop(self._retry_heap)
+                self._process_item(item, base_delay, max_delay, max_retries)
+
+            # Check main queue
             try:
                 item: TransferItem = self._queue.get(timeout=1.0)
             except Empty:
                 continue
 
-            # Respect retry backoff
-            now = time.time()
-            if item.next_retry_time > now:
-                self._queue.put(item)
-                time.sleep(0.5)
-                continue
+            self._process_item(item, base_delay, max_delay, max_retries)
 
-            success = self._attempt_send(item)
+    def _process_item(self, item: TransferItem, base_delay: int, max_delay: int, max_retries: int):
+        success = self._attempt_send(item)
 
-            if success:
-                continue  # done
+        if success:
+            if self.on_file_sent:
+                self.on_file_sent(item.file_path.name, item.target_ip)
+            return
 
-            item.retry_count += 1
-            if item.retry_count <= max_retries:
-                delay = min(base_delay * (2 ** (item.retry_count - 1)), max_delay)
-                item.next_retry_time = time.time() + delay
-                self._queue.put(item)
-                Logger.info(
-                    f"Proximity: Will retry '{item.file_path.name}' "
-                    f"(attempt {item.retry_count}/{max_retries}) in {delay}s"
-                )
-            else:
-                Logger.error(f"Proximity: Gave up on '{item.file_path.name}' after {max_retries} retries")
+        item.retry_count += 1
+        if item.retry_count <= max_retries:
+            delay = min(base_delay * (2 ** (item.retry_count - 1)), max_delay)
+            item.next_retry_time = time.time() + delay
+            self._retry_counter += 1
+            heapq.heappush(self._retry_heap, (item.next_retry_time, self._retry_counter, item))
+            Logger.info(
+                f"Proximity: Will retry '{item.file_path.name}' "
+                f"(attempt {item.retry_count}/{max_retries}) in {delay}s"
+            )
+        else:
+            Logger.error(f"Proximity: Gave up on '{item.file_path.name}' after {max_retries} retries")
 
     def _attempt_send(self, item: TransferItem) -> bool:
         try:

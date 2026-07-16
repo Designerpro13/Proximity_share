@@ -63,6 +63,7 @@ class Config:
             "discovery_interval": 30,
             "retry_base_delay": 30,
             "max_retry_delay": 1800,
+            "shared_secret": "",
         }
 
     @classmethod
@@ -85,6 +86,7 @@ class Config:
             ("transfer", "max_retry_delay"): ("max_retry_delay", int),
             ("transfer", "buffer_size"): ("buffer_size", int),
             ("ui", "show_notifications"): ("notification_enabled", lambda v: v.lower() == "true"),
+            ("security", "shared_secret"): ("shared_secret", str),
         }
 
         for (section, key), (target_key, coerce) in mapping.items():
@@ -111,10 +113,17 @@ class Config:
     # ------------------------------------------------------------------
 
     def save_config(self):
-        """Persist current config to user JSON."""
+        """Persist only user-changed values to JSON (not defaults/INI values)."""
         self.config_dir.mkdir(parents=True, exist_ok=True)
+        # Only save keys that differ from the base (defaults + INI)
+        base = {**self._defaults, **self._ini_values}
+        user_overrides = {
+            key: value
+            for key, value in self.config_data.items()
+            if key not in base or base[key] != value
+        }
         with open(self.config_file, "w") as f:
-            json.dump(self.config_data, f, indent=2)
+            json.dump(user_overrides, f, indent=2)
 
     # ------------------------------------------------------------------
     # Accessors
@@ -151,3 +160,6 @@ class Config:
 
     def is_notification_enabled(self) -> bool:
         return bool(self.config_data.get("notification_enabled", True))
+
+    def get_shared_secret(self) -> str:
+        return str(self.config_data.get("shared_secret", ""))
